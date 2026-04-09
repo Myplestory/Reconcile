@@ -1,0 +1,1541 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Reconcile</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3/dist/cdn.min.js"></script>
+    <!-- 3d-force-graph loaded lazily on first team select -->
+    <style>
+        [x-cloak] { display: none !important; }
+        .slide-enter { transform: translateX(100%); }
+        .slide-leave { transform: translateX(100%); }
+    </style>
+</head>
+<body class="bg-gray-950 text-gray-100 min-h-screen" x-data="dashboard()" x-cloak>
+
+<!-- Header -->
+<header class="border-b border-gray-800 px-6 py-3 flex items-center justify-between">
+    <div>
+        <h1 class="text-xl font-bold tracking-tight">Reconcile</h1>
+        <p class="text-xs text-gray-500">Real-time integrity monitor</p>
+    </div>
+    <div class="flex items-center gap-4">
+        <!-- Search -->
+        <div class="relative">
+            <input type="text" x-model="teamSearch" placeholder="Search teams..."
+                   class="bg-gray-900 text-sm rounded-lg pl-8 pr-3 py-1.5 border border-gray-700 focus:border-blue-500 focus:outline-none w-48">
+            <svg class="absolute left-2.5 top-2 w-3.5 h-3.5 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+            </svg>
+        </div>
+        <div class="flex items-center gap-3 text-sm text-gray-400">
+            <span x-text="`${teams.length} team(s)`"></span>
+            <span>&bull;</span>
+            <span x-text="`${formatUptime(displayUptime)}`"></span>
+            <span class="w-2 h-2 rounded-full" :class="connected ? 'bg-green-500' : 'bg-red-500'"></span>
+        </div>
+        <!-- Config button -->
+        <button @click="openConfig()" :disabled="!selectedTeam"
+                class="p-1.5 rounded-lg hover:bg-gray-800 transition disabled:opacity-30 disabled:cursor-not-allowed"
+                title="Team config">
+            <svg class="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/>
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/>
+            </svg>
+        </button>
+    </div>
+</header>
+
+<div class="flex h-[calc(100vh-65px)]">
+
+<!-- Left: Team Grid -->
+<div class="w-80 border-r border-gray-800 overflow-y-auto p-4 flex-shrink-0">
+    <h2 class="text-xs font-semibold text-gray-500 uppercase mb-3">Teams</h2>
+    <div class="space-y-2">
+        <template x-for="team in sortedTeams" :key="team.team_id">
+            <div class="bg-gray-900 rounded-lg p-3 cursor-pointer hover:bg-gray-800 transition"
+                 :class="selectedTeam === team.team_id ? 'ring-1 ring-blue-500' : ''"
+                 @click="selectTeam(team.team_id)">
+                <div class="flex items-center justify-between">
+                    <span class="font-medium text-sm" x-text="team.name || team.team_id"></span>
+                    <span class="w-2 h-2 rounded-full" :class="team.status === 'running' ? 'bg-green-500' : 'bg-gray-600'"></span>
+                </div>
+                <div class="flex gap-3 mt-1 text-xs text-gray-500">
+                    <span x-text="`${team.timeline_size} events`"></span>
+                    <span x-text="`${team.detectors} detectors`"></span>
+                    <span class="text-yellow-500" x-show="team.alert_count > 0" x-text="`${team.alert_count} alerts`"></span>
+                </div>
+            </div>
+        </template>
+    </div>
+    <div x-show="teams.length === 0" class="text-sm text-gray-600 mt-4">
+        No teams registered.
+    </div>
+</div>
+
+<!-- Center: Main Content -->
+<div class="flex-1 flex flex-col overflow-hidden min-w-0">
+
+    <!-- Tab Bar -->
+    <div class="border-b border-gray-800 px-4 py-0 flex items-center justify-between flex-shrink-0">
+        <div class="flex gap-0">
+            <template x-for="tab in ['collaboration', 'alerts', 'members', 'timeline', 'graph']" :key="tab">
+                <button @click="currentTab = tab; if (tab === 'graph' && selectedTeam) $nextTick(() => renderGraph()); if (tab === 'collaboration' && selectedTeam) loadCollaboration(selectedTeam)"
+                        class="px-4 py-2.5 text-xs font-semibold uppercase transition border-b-2"
+                        :class="currentTab === tab
+                            ? 'text-blue-400 border-blue-400'
+                            : 'text-gray-500 border-transparent hover:text-gray-300'"
+                        x-text="tab"
+                        role="tab"
+                        :aria-selected="currentTab === tab"
+                        tabindex="0"
+                        @keydown.enter="currentTab = tab"></button>
+            </template>
+        </div>
+        <!-- Filters (visible on alerts tab) -->
+        <div class="flex gap-2" x-show="currentTab === 'alerts'">
+            <select x-model="categoryFilter" class="bg-gray-900 text-xs rounded px-2 py-1 border border-gray-700">
+                <option value="">All categories</option>
+                <option value="evidence">Evidence</option>
+                <option value="attribution">Attribution</option>
+                <option value="attendance">Attendance</option>
+                <option value="process">Process</option>
+            </select>
+            <select x-model="severityFilter" class="bg-gray-900 text-xs rounded px-2 py-1 border border-gray-700">
+                <option value="">All severities</option>
+                <option value="critical">Critical</option>
+                <option value="suspect">Suspect</option>
+                <option value="elevated">Elevated</option>
+                <option value="info">Info</option>
+            </select>
+        </div>
+        <!-- Sweep button (visible on members tab) -->
+        <div x-show="currentTab === 'members' && selectedTeam">
+            <button @click="sweepTeam(selectedTeam)"
+                    class="px-3 py-1 bg-blue-600 hover:bg-blue-700 rounded text-xs font-medium transition">
+                Sweep
+            </button>
+            <button @click="downloadReport(selectedTeam)"
+                    class="px-3 py-1 bg-green-600 hover:bg-green-700 rounded text-xs font-medium transition ml-2">
+                Report
+            </button>
+        </div>
+    </div>
+    <!-- TAB: Collaboration -->
+    <div x-show="currentTab === 'collaboration'" class="flex-1 overflow-y-auto p-4">
+
+        <!-- No team selected -->
+        <div x-show="!selectedTeam" class="text-center py-12">
+            <p class="text-gray-500 text-sm">Select a team to view collaboration metrics</p>
+            <!-- Cross-team overview table -->
+            <div x-show="collabOverview.length > 0" class="mt-6 max-w-2xl mx-auto">
+                <table class="w-full text-sm text-left" role="table">
+                    <thead class="text-xs text-gray-500 uppercase border-b border-gray-800">
+                        <tr><th class="px-3 py-2">Team</th><th class="px-3 py-2">Health</th><th class="px-3 py-2">Gini</th><th class="px-3 py-2">Bus F.</th><th class="px-3 py-2">Cluster</th></tr>
+                    </thead>
+                    <tbody>
+                        <template x-for="t in collabOverview" :key="t.team_id">
+                            <tr class="border-b border-gray-800 hover:bg-gray-900 cursor-pointer" @click="selectTeam(t.team_id); currentTab='collaboration'">
+                                <td class="px-3 py-2 font-medium" x-text="t.team_name || t.team_id"></td>
+                                <td class="px-3 py-2">
+                                    <span class="font-mono" :class="(t.health_score||0) >= 70 ? 'text-blue-400' : (t.health_score||0) >= 40 ? 'text-yellow-400' : 'text-red-400'"
+                                          x-text="t.health_score != null ? t.health_score : '---'"></span>
+                                </td>
+                                <td class="px-3 py-2 font-mono" x-text="t.gini != null ? t.gini.toFixed(2) : '---'"></td>
+                                <td class="px-3 py-2 font-mono" x-text="t.bus_factor != null ? t.bus_factor : '---'"></td>
+                                <td class="px-3 py-2 font-mono" x-text="t.clustering_ratio != null ? t.clustering_ratio.toFixed(2) : '---'"></td>
+                            </tr>
+                        </template>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Team selected: 3-tier progressive disclosure -->
+        <div x-show="selectedTeam && collabData">
+
+            <!-- Tier Toggle (Mockus et al. 2000) -->
+            <div class="flex items-center gap-2 mb-3">
+                <span class="text-xs text-gray-500 uppercase">View:</span>
+                <template x-for="tier in ['git', 'board', 'combined']" :key="tier">
+                    <button @click="collabTier = tier"
+                            class="px-2 py-0.5 text-xs rounded transition"
+                            :class="collabTier === tier ? 'bg-blue-600 text-white' : 'bg-gray-800 text-gray-400 hover:text-gray-200'"
+                            x-text="tier === 'git' ? 'Git (Code)' : tier === 'board' ? 'Board (PM)' : 'All'"
+                            role="tab" :aria-selected="collabTier === tier" tabindex="0"></button>
+                </template>
+                <span class="text-xs text-gray-600 ml-2" x-show="collabTier === 'git'">PM excluded from denominators</span>
+            </div>
+
+            <!-- Tier 1: KPI Tiles -->
+            <div class="grid grid-cols-3 sm:grid-cols-6 gap-3 mb-4">
+                <template x-for="kpi in collabKPIs" :key="kpi.key">
+                    <div class="bg-gray-900 rounded-lg p-3 cursor-pointer hover:ring-1 hover:ring-blue-500 transition"
+                         @click="collabExpanded === kpi.key ? collabExpanded = null : collabExpanded = kpi.key"
+                         :class="collabExpanded === kpi.key ? 'ring-1 ring-blue-500' : ''"
+                         role="button" tabindex="0" @keydown.enter="collabExpanded === kpi.key ? collabExpanded = null : collabExpanded = kpi.key"
+                         :aria-label="kpi.label + ': ' + kpi.value">
+                        <div class="text-xs text-gray-500 uppercase" x-text="kpi.label"></div>
+                        <div class="text-xl font-bold font-mono mt-1" x-text="kpi.display"></div>
+                        <div class="text-xs mt-1" :class="{
+                            'text-red-400': kpi.trend === 'increasing' && kpi.inverted,
+                            'text-blue-400': kpi.trend === 'increasing' && !kpi.inverted,
+                            'text-blue-400': kpi.trend === 'decreasing' && kpi.inverted,
+                            'text-red-400': kpi.trend === 'decreasing' && !kpi.inverted,
+                            'text-gray-500': kpi.trend === 'stable' || kpi.trend === 'insufficient',
+                        }">
+                            <span x-show="kpi.trend === 'increasing'" aria-label="increasing">&#9650;</span>
+                            <span x-show="kpi.trend === 'decreasing'" aria-label="decreasing">&#9660;</span>
+                            <span x-show="kpi.trend === 'stable'" aria-label="stable">&#8212;</span>
+                            <span x-show="kpi.trend === 'insufficient'" class="text-gray-600">baseline</span>
+                        </div>
+                    </div>
+                </template>
+            </div>
+
+            <!-- Health Score Bar -->
+            <div class="bg-gray-900 rounded-lg p-3 mb-4">
+                <div class="flex items-center justify-between mb-1">
+                    <span class="text-xs text-gray-500 uppercase">Team Health</span>
+                    <span class="text-sm font-mono font-bold"
+                          :class="(collabData?.latest?.health_score||0) >= 70 ? 'text-blue-400' : (collabData?.latest?.health_score||0) >= 40 ? 'text-yellow-400' : 'text-red-400'"
+                          x-text="collabData?.latest?.health_score ?? '---'"></span>
+                </div>
+                <div class="w-full bg-gray-800 rounded-full h-2" role="progressbar" :aria-valuenow="collabData?.latest?.health_score || 0" aria-valuemin="0" aria-valuemax="100">
+                    <div class="h-2 rounded-full transition-all duration-500"
+                         :class="(collabData?.latest?.health_score||0) >= 70 ? 'bg-blue-500' : (collabData?.latest?.health_score||0) >= 40 ? 'bg-yellow-500' : 'bg-red-500'"
+                         :style="`width: ${Math.min(collabData?.latest?.health_score || 0, 100)}%`"></div>
+                </div>
+            </div>
+
+            <!-- Tier 2: Expanded Detail Accordion -->
+            <div x-show="collabExpanded" x-transition class="bg-gray-900 rounded-lg p-4 mb-4">
+                <div class="flex items-center justify-between mb-2">
+                    <h3 class="text-sm font-semibold" x-text="collabExpandedTitle"></h3>
+                    <button @click="collabExpanded = null" class="text-gray-500 hover:text-gray-300 text-xs">Close</button>
+                </div>
+                <p class="text-xs text-gray-400 mb-3" x-text="collabExpandedDesc"></p>
+
+                <!-- Sparkline (inline SVG) -->
+                <div x-show="collabSparkData.length > 1" class="mb-3">
+                    <svg :viewBox="'0 0 200 40'" class="w-full h-10 text-blue-400">
+                        <polyline fill="none" stroke="currentColor" stroke-width="2"
+                                  :points="collabSparkPoints"></polyline>
+                    </svg>
+                </div>
+
+                <!-- Reconciliation prompt -->
+                <div class="bg-gray-800 rounded p-2 text-xs text-gray-300">
+                    <span class="text-gray-500 font-semibold">Action:</span>
+                    <span x-text="collabExpandedAction"></span>
+                </div>
+            </div>
+
+            <!-- Tier 2 alt: Per-member breakdown table -->
+            <div class="bg-gray-900 rounded-lg p-4 mb-4">
+                <h3 class="text-xs text-gray-500 uppercase mb-2">Per-Member Breakdown</h3>
+                <div class="overflow-x-auto">
+                    <table class="w-full text-xs text-left" role="table">
+                        <thead class="text-gray-500 uppercase border-b border-gray-800">
+                            <tr><th class="px-2 py-1">Member</th><th class="px-2 py-1">Actions</th><th class="px-2 py-1">Commits</th><th class="px-2 py-1">Board</th><th class="px-2 py-1">Cadence</th></tr>
+                        </thead>
+                        <tbody>
+                            <template x-for="[name, data] in collabMembers" :key="name">
+                                <tr class="border-b border-gray-800/50">
+                                    <td class="px-2 py-1.5 font-medium" x-text="name"></td>
+                                    <td class="px-2 py-1.5 font-mono" x-text="data.total_actions || 0"></td>
+                                    <td class="px-2 py-1.5 font-mono" x-text="data.commits || 0"></td>
+                                    <td class="px-2 py-1.5 font-mono" x-text="data.board_actions || 0"></td>
+                                    <td class="px-2 py-1.5 font-mono" x-text="(data.cadence || 0).toFixed(2)"></td>
+                                </tr>
+                            </template>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- Interaction Graph (mini) -->
+            <div class="bg-gray-900 rounded-lg p-4 mb-4" x-show="collabData?.latest?.interaction_graph?.edges?.length > 0">
+                <h3 class="text-xs text-gray-500 uppercase mb-2">Interaction Network</h3>
+                <div class="flex flex-wrap gap-2">
+                    <template x-for="edge in (collabData?.latest?.interaction_graph?.edges || [])" :key="edge.source + edge.target">
+                        <span class="bg-gray-800 rounded px-2 py-1 text-xs">
+                            <span x-text="edge.source.split(' ')[0]"></span>
+                            <span class="text-gray-500 mx-1">&harr;</span>
+                            <span x-text="edge.target.split(' ')[0]"></span>
+                            <span class="text-gray-500 ml-1" x-text="'(' + edge.weight + ')'"></span>
+                        </span>
+                    </template>
+                </div>
+            </div>
+
+            <!-- Stale Cards -->
+            <div x-show="(collabData?.latest?.stale_cards || []).length > 0" class="bg-gray-900 rounded-lg p-4 mb-4">
+                <h3 class="text-xs text-gray-500 uppercase mb-2">Stale Cards <span class="text-yellow-500" aria-label="warning">&#9679;</span></h3>
+                <template x-for="card in (collabData?.latest?.stale_cards || [])" :key="card.card_id">
+                    <div class="text-xs py-1 border-b border-gray-800/50">
+                        Card <span class="font-mono" x-text="card.card_id"></span>
+                        in <span class="text-yellow-400" x-text="card.pipeline"></span>
+                        &mdash; <span x-text="card.days_stale"></span> days stale
+                        (last: <span x-text="card.last_actor"></span>)
+                    </div>
+                </template>
+            </div>
+
+            <!-- Compute button -->
+            <div class="flex gap-2 mt-4">
+                <button @click="computeCollaboration()"
+                        class="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 rounded text-xs font-medium transition"
+                        :disabled="collabComputing">
+                    <span x-show="!collabComputing">Compute Metrics</span>
+                    <span x-show="collabComputing">Computing...</span>
+                </button>
+            </div>
+        </div>
+
+        <!-- Loading / no data -->
+        <div x-show="selectedTeam && !collabData" class="text-center py-12">
+            <p class="text-gray-500 text-sm">Loading collaboration data...</p>
+        </div>
+    </div>
+
+    <!-- TAB: Alerts -->
+    <div x-show="currentTab === 'alerts'" class="flex-1 overflow-y-auto p-4 space-y-2" id="alert-feed"
+         @mouseenter="pauseScroll = true" @mouseleave="pauseScroll = false">
+        <template x-for="(alert, i) in filteredAlerts" :key="i">
+            <div class="bg-gray-900 rounded-lg p-3 border-l-4 cursor-pointer hover:bg-gray-800 transition"
+                 @click="openAlertDetail(alert)"
+                 :class="{
+                     'border-red-500': alert.severity === 'critical',
+                     'border-yellow-500': alert.severity === 'suspect',
+                     'border-cyan-500': alert.severity === 'elevated',
+                     'border-gray-600': alert.severity === 'info',
+                 }">
+                <div class="flex items-start justify-between">
+                    <div class="flex items-center gap-1.5 flex-wrap">
+                        <span class="text-xs font-mono px-1.5 py-0.5 rounded"
+                              :class="{
+                                  'bg-red-900 text-red-300': alert.severity === 'critical',
+                                  'bg-yellow-900 text-yellow-300': alert.severity === 'suspect',
+                                  'bg-cyan-900 text-cyan-300': alert.severity === 'elevated',
+                                  'bg-gray-800 text-gray-400': alert.severity === 'info',
+                              }"
+                              x-text="alert.severity.toUpperCase()"></span>
+                        <span class="text-xs font-mono px-1.5 py-0.5 rounded"
+                              :class="{
+                                  'bg-purple-900 text-purple-300': alert.category === 'evidence',
+                                  'bg-orange-900 text-orange-300': alert.category === 'attribution',
+                                  'bg-blue-900 text-blue-300': alert.category === 'attendance',
+                                  'bg-gray-800 text-gray-400': alert.category === 'process',
+                              }"
+                              x-text="(alert.category || 'process').toUpperCase()"></span>
+                        <span class="text-xs text-gray-500" x-text="alert.detector"></span>
+                    </div>
+                    <div class="flex items-center gap-2">
+                        <span class="text-xs font-mono text-gray-500" x-text="'score:' + (alert.score || '?')"></span>
+                        <span class="text-xs text-gray-600" x-text="new Date(alert.timestamp).toLocaleTimeString()"></span>
+                    </div>
+                </div>
+                <p class="text-sm mt-1" x-text="alert.title"></p>
+                <p class="text-xs text-gray-500 mt-1" x-text="alert.detail" x-show="alert.detail"></p>
+            </div>
+        </template>
+        <div x-show="alerts.length === 0" class="text-sm text-gray-600 text-center mt-8">
+            No alerts yet. Monitoring...
+        </div>
+    </div>
+
+    <!-- TAB: Members -->
+    <div x-show="currentTab === 'members'" class="flex-1 overflow-y-auto p-4">
+        <div x-show="!selectedTeam" class="text-sm text-gray-600 text-center mt-8">
+            Select a team to view member profiles.
+        </div>
+        <div x-show="selectedTeam && !teamDetail" class="text-sm text-gray-600 text-center mt-8">
+            Loading...
+        </div>
+        <template x-if="selectedTeam && teamDetail">
+            <div>
+                <!-- Member Profiles -->
+                <div class="space-y-2">
+                    <template x-for="p in sortedProfiles" :key="p.member">
+                        <div class="bg-gray-900 rounded-lg p-2.5 cursor-pointer hover:bg-gray-800 transition"
+                             @click="selectedMember = selectedMember === p.member ? null : p.member">
+                            <div class="flex items-center justify-between">
+                                <div class="flex items-center gap-2">
+                                    <span class="font-medium text-sm" x-text="p.member"></span>
+                                    <span class="text-[10px] font-mono px-1.5 py-0.5 rounded"
+                                          :class="{
+                                              'bg-red-900 text-red-300': p.direction === 'perpetrator',
+                                              'bg-blue-900 text-blue-300': p.direction === 'victim',
+                                              'bg-orange-900 text-orange-300': p.direction === 'mixed',
+                                              'bg-gray-800 text-gray-400': p.direction === 'neutral',
+                                          }"
+                                          x-text="p.direction?.toUpperCase()"></span>
+                                </div>
+                                <div class="flex items-center gap-2 text-[10px] font-mono">
+                                    <span class="text-red-400" x-text="'P:' + (p.perpetrator_score || 0)"></span>
+                                    <span class="text-blue-400" x-text="'V:' + (p.victim_score || 0)"></span>
+                                    <span class="text-yellow-400" x-show="parsedFlags(p).length > 0"
+                                          x-text="parsedFlags(p).length + ' flags'"></span>
+                                </div>
+                            </div>
+                            <div x-show="selectedMember === p.member" x-collapse class="mt-2 pt-2 border-t border-gray-800">
+                                <div class="grid grid-cols-2 gap-x-4 gap-y-0.5 text-[10px] mb-2">
+                                    <div class="flex justify-between"><span class="text-gray-500">Cards completed</span><span class="font-mono" x-text="p.cards_completed || 0"></span></div>
+                                    <div class="flex justify-between"><span class="text-gray-500">Commits</span><span class="font-mono" x-text="p.commits || 0"></span></div>
+                                    <div class="flex justify-between"><span class="text-gray-500">Zero-commit cards</span><span class="font-mono text-yellow-400" x-text="p.cards_completed_zero_commits || 0"></span></div>
+                                    <div class="flex justify-between"><span class="text-gray-500">Branches deleted</span><span class="font-mono" x-text="p.branches_deleted || 0"></span></div>
+                                    <div class="flex justify-between"><span class="text-gray-500">Files reattr. to</span><span class="font-mono" x-text="p.files_reattributed_to || 0"></span></div>
+                                    <div class="flex justify-between"><span class="text-gray-500">Files reattr. from</span><span class="font-mono" x-text="p.files_reattributed_from || 0"></span></div>
+                                    <div class="flex justify-between"><span class="text-gray-500">Messages sent</span><span class="font-mono" x-text="p.messages_sent || 0"></span></div>
+                                    <div class="flex justify-between"><span class="text-gray-500">Proactive msgs</span><span class="font-mono" x-text="p.proactive_count || 0"></span></div>
+                                    <div class="flex justify-between"><span class="text-gray-500">Meetings present</span><span class="font-mono text-green-400" x-text="p.meetings_present || 0"></span></div>
+                                    <div class="flex justify-between"><span class="text-gray-500">Meetings absent</span><span class="font-mono text-red-400" x-text="p.meetings_absent || 0"></span></div>
+                                </div>
+                                <div class="grid grid-cols-2 gap-2 text-[10px] mb-2" x-show="(p.cards_completed || 0) > 0 || (p.meetings_present || 0) + (p.meetings_absent || 0) > 0">
+                                    <div class="bg-gray-800 rounded p-1.5" x-show="(p.cards_completed || 0) > 0">
+                                        <div class="text-gray-500">Zero-commit ratio</div>
+                                        <div class="font-mono" :class="((p.cards_completed_zero_commits || 0) / p.cards_completed) > 0.5 ? 'text-red-400' : 'text-gray-300'"
+                                             x-text="((p.cards_completed_zero_commits || 0) / p.cards_completed * 100).toFixed(0) + '%'"></div>
+                                    </div>
+                                    <div class="bg-gray-800 rounded p-1.5" x-show="(p.meetings_present || 0) + (p.meetings_absent || 0) > 0">
+                                        <div class="text-gray-500">Absence rate</div>
+                                        <div class="font-mono" :class="((p.meetings_absent || 0) / ((p.meetings_present || 0) + (p.meetings_absent || 0))) > 0.3 ? 'text-red-400' : 'text-gray-300'"
+                                             x-text="((p.meetings_absent || 0) / ((p.meetings_present || 0) + (p.meetings_absent || 0)) * 100).toFixed(0) + '%'"></div>
+                                    </div>
+                                </div>
+                                <template x-for="(flag, fi) in parsedFlags(p)" :key="fi">
+                                    <div class="bg-gray-800 rounded p-1.5 mb-1 text-[10px]">
+                                        <div class="flex items-center gap-1.5">
+                                            <span class="px-1 py-0.5 rounded font-mono"
+                                                  :class="{
+                                                      'bg-red-900 text-red-300': flag.severity === 'critical' || flag.severity === 'high',
+                                                      'bg-yellow-900 text-yellow-300': flag.severity === 'suspect',
+                                                      'bg-cyan-900 text-cyan-300': flag.severity === 'elevated',
+                                                      'bg-gray-700 text-gray-400': flag.severity === 'info',
+                                                  }"
+                                                  x-text="flag.type"></span>
+                                            <span class="text-gray-500" x-text="flag.date ? new Date(flag.date).toLocaleDateString() : ''"></span>
+                                        </div>
+                                        <p class="text-gray-400 mt-0.5" x-text="flag.detail"></p>
+                                    </div>
+                                </template>
+                            </div>
+                        </div>
+                    </template>
+                </div>
+
+                <!-- Relationships -->
+                <div x-show="relationships.length > 0" class="mt-3">
+                    <h3 class="text-[10px] font-semibold text-gray-500 uppercase mb-2">Relationships</h3>
+                    <div class="bg-gray-900 rounded-lg overflow-hidden">
+                        <table class="w-full text-[10px]">
+                            <thead><tr class="text-gray-500 border-b border-gray-800">
+                                <th class="text-left p-1.5">Actor</th><th class="text-left p-1.5">Victim</th>
+                                <th class="text-left p-1.5">Type</th><th class="text-left p-1.5">Count</th>
+                            </tr></thead>
+                            <tbody>
+                                <template x-for="(rel, ri) in relationships" :key="ri">
+                                    <tr class="border-b border-gray-800/50 hover:bg-gray-800/50">
+                                        <td class="p-1.5 font-mono text-red-400" x-text="rel.actor"></td>
+                                        <td class="p-1.5 font-mono text-blue-400" x-text="rel.victim"></td>
+                                        <td class="p-1.5" x-text="rel.type"></td>
+                                        <td class="p-1.5 font-mono" x-text="rel.count"></td>
+                                    </tr>
+                                </template>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </template>
+    </div>
+
+    <!-- TAB: Timeline -->
+    <div x-show="currentTab === 'timeline'" class="flex-1 overflow-y-auto p-4">
+        <div x-show="!selectedTeam" class="text-sm text-gray-600 text-center mt-8">
+            Select a team to view timeline.
+        </div>
+        <div x-show="selectedTeam && timelineEvents.length === 0" class="text-sm text-gray-600 text-center mt-8">
+            No events yet.
+        </div>
+        <div x-show="selectedTeam && timelineEvents.length > 0" class="space-y-1">
+            <template x-for="(ev, i) in timelineEvents" :key="ev.event_hash || i">
+                <div class="flex items-start gap-2 py-1.5 px-2 rounded hover:bg-gray-900 text-[11px]">
+                    <span class="text-gray-600 font-mono flex-shrink-0 w-[130px]" x-text="ev.timestamp ? new Date(ev.timestamp).toLocaleString([], {month:'short', day:'numeric', hour:'2-digit', minute:'2-digit', second:'2-digit'}) : ''"></span>
+                    <span class="px-1.5 py-0.5 rounded text-[9px] font-mono flex-shrink-0 w-[52px] text-center"
+                          :class="{
+                              'bg-green-900 text-green-300': (ev.source || '').includes('board'),
+                              'bg-blue-900 text-blue-300': (ev.source || '').includes('git') || (ev.source || '').includes('github'),
+                              'bg-purple-900 text-purple-300': (ev.source || '').includes('discord'),
+                              'bg-orange-900 text-orange-300': (ev.source || '').includes('email'),
+                              'bg-gray-800 text-gray-400': !(ev.source || '').match(/board|git|discord|email/),
+                          }"
+                          x-text="(ev.source || '?').replace('board-ws','board').replace('github','git')"></span>
+                    <span class="text-gray-300 font-medium flex-shrink-0 w-[120px] truncate" x-text="ev.actor"></span>
+                    <span class="font-mono flex-shrink-0"
+                          :class="{
+                              'text-red-400': (ev.action || '').includes('delete'),
+                              'text-yellow-400': (ev.action || '').includes('move'),
+                              'text-green-400': (ev.action || '').includes('create') || (ev.action || '').includes('add'),
+                              'text-cyan-400': (ev.action || '').includes('push') || (ev.action || '').includes('commit'),
+                              'text-gray-400': !(ev.action || '').match(/delete|move|create|add|push|commit/),
+                          }"
+                          x-text="ev.action"></span>
+                    <span class="text-gray-500 truncate" x-text="ev.target"></span>
+                </div>
+            </template>
+            <!-- Load More -->
+            <div x-show="hasMoreEvents" class="py-3 text-center">
+                <button @click="loadMoreEvents()"
+                        :disabled="loadingMoreEvents"
+                        class="px-4 py-1.5 text-xs font-medium bg-gray-800 hover:bg-gray-700 rounded-lg transition disabled:opacity-50">
+                    <span x-show="!loadingMoreEvents">Load More Events</span>
+                    <span x-show="loadingMoreEvents">Loading...</span>
+                </button>
+            </div>
+            <div x-show="!hasMoreEvents && timelineEvents.length > 0" class="py-2 text-center text-[10px] text-gray-600">
+                <span x-text="`${timelineEvents.length} events loaded`"></span>
+            </div>
+        </div>
+    </div>
+
+    <!-- TAB: Graph -->
+    <div x-show="currentTab === 'graph'" class="flex-1 overflow-hidden p-0">
+        <div x-show="!selectedTeam" class="text-sm text-gray-600 text-center mt-8 p-4">
+            Select a team to view relationship graph.
+        </div>
+        <div x-show="selectedTeam" id="tab-graph-container" style="width: 100%; height: 100%; min-height: 400px;"></div>
+        <div x-show="selectedTeam && graphError" class="text-sm text-red-400 text-center mt-4 p-4" x-text="graphError"></div>
+    </div>
+
+    <!-- Bottom status bar (compact) -->
+    <div class="border-t border-gray-800 flex-shrink-0 px-4 py-1 flex items-center gap-3 text-[10px] font-mono text-gray-600">
+        <span x-text="formatUptime(displayUptime)"></span>
+        <span>&bull;</span>
+        <span x-text="`${teams.length} team(s)`"></span>
+        <span>&bull;</span>
+        <span x-text="`${logs.length} log entries`"></span>
+        <span :class="connected ? 'text-green-500' : 'text-red-500'" x-text="connected ? 'SSE connected' : 'SSE disconnected'"></span>
+    </div>
+</div>
+
+<!-- Alert Detail Modal -->
+<div x-show="selectedAlert" x-transition:enter="transition ease-out duration-150"
+     x-transition:enter-start="opacity-0" x-transition:enter-end="opacity-100"
+     x-transition:leave="transition ease-in duration-100"
+     x-transition:leave-start="opacity-100" x-transition:leave-end="opacity-0"
+     class="fixed inset-0 z-50 flex items-center justify-center" @click.self="selectedAlert = null">
+    <div class="absolute inset-0 bg-black/60"></div>
+    <div class="relative bg-gray-900 rounded-xl border border-gray-700 w-[36rem] max-h-[80vh] overflow-y-auto p-5 shadow-2xl"
+         @click.stop>
+        <template x-if="selectedAlert">
+            <div>
+                <!-- Header -->
+                <div class="flex items-center justify-between mb-3">
+                    <div class="flex items-center gap-2">
+                        <span class="text-xs font-mono px-1.5 py-0.5 rounded"
+                              :class="{
+                                  'bg-red-900 text-red-300': selectedAlert.severity === 'critical',
+                                  'bg-yellow-900 text-yellow-300': selectedAlert.severity === 'suspect',
+                                  'bg-cyan-900 text-cyan-300': selectedAlert.severity === 'elevated',
+                                  'bg-gray-800 text-gray-400': selectedAlert.severity === 'info',
+                              }"
+                              x-text="selectedAlert.severity?.toUpperCase()"></span>
+                        <span class="text-xs font-mono px-1.5 py-0.5 rounded"
+                              :class="{
+                                  'bg-purple-900 text-purple-300': selectedAlert.category === 'evidence',
+                                  'bg-orange-900 text-orange-300': selectedAlert.category === 'attribution',
+                                  'bg-blue-900 text-blue-300': selectedAlert.category === 'attendance',
+                                  'bg-gray-800 text-gray-400': selectedAlert.category === 'process',
+                              }"
+                              x-text="(selectedAlert.category || 'process').toUpperCase()"></span>
+                        <span class="text-xs text-gray-500" x-text="'score:' + (selectedAlert.score || '?')"></span>
+                    </div>
+                    <button @click="selectedAlert = null" class="text-gray-400 hover:text-white">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                        </svg>
+                    </button>
+                </div>
+
+                <h3 class="text-base font-medium mb-1" x-text="selectedAlert.title"></h3>
+                <p class="text-sm text-gray-400 mb-4" x-text="selectedAlert.detail"></p>
+
+                <!-- Audit Trail -->
+                <div class="bg-gray-800 rounded-lg p-3 mb-3">
+                    <h4 class="text-[10px] font-semibold text-gray-500 uppercase mb-2">Audit Trail</h4>
+                    <div class="space-y-1 text-xs">
+                        <div class="flex justify-between">
+                            <span class="text-gray-500">Detector</span>
+                            <span class="font-mono" x-text="selectedAlert.detector"></span>
+                        </div>
+                        <div class="flex justify-between">
+                            <span class="text-gray-500">Timestamp</span>
+                            <span class="font-mono" x-text="selectedAlert.timestamp"></span>
+                        </div>
+                        <div class="flex justify-between" x-show="selectedAlert.event_hash">
+                            <span class="text-gray-500">Event hash</span>
+                            <span class="font-mono text-blue-400" x-text="selectedAlert.event_hash"></span>
+                        </div>
+                        <div class="flex justify-between" x-show="selectedAlert.team_id">
+                            <span class="text-gray-500">Team</span>
+                            <span class="font-mono" x-text="selectedAlert.team_id"></span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Triggering Event -->
+                <template x-if="selectedAlert.triggering_event">
+                    <div class="bg-gray-800 rounded-lg p-3 mb-3">
+                        <h4 class="text-[10px] font-semibold text-gray-500 uppercase mb-2">Triggering Event</h4>
+                        <div class="space-y-1 text-xs">
+                            <div class="flex justify-between">
+                                <span class="text-gray-500">Action</span>
+                                <span class="font-mono" x-text="selectedAlert.triggering_event.action"></span>
+                            </div>
+                            <div class="flex justify-between">
+                                <span class="text-gray-500">Actor</span>
+                                <span class="font-mono" x-text="selectedAlert.triggering_event.actor"></span>
+                            </div>
+                            <div class="flex justify-between">
+                                <span class="text-gray-500">Target</span>
+                                <span class="font-mono" x-text="selectedAlert.triggering_event.target"></span>
+                            </div>
+                            <div class="flex justify-between">
+                                <span class="text-gray-500">Source</span>
+                                <span class="font-mono" x-text="selectedAlert.triggering_event.source"></span>
+                            </div>
+                        </div>
+                    </div>
+                </template>
+
+                <!-- Related Alerts -->
+                <template x-if="selectedAlert.related_alerts && selectedAlert.related_alerts.length > 0">
+                    <div class="bg-gray-800 rounded-lg p-3">
+                        <h4 class="text-[10px] font-semibold text-gray-500 uppercase mb-2">
+                            Related Alerts (<span x-text="selectedAlert.related_alerts.length"></span>)
+                        </h4>
+                        <div class="space-y-1">
+                            <template x-for="rel in selectedAlert.related_alerts" :key="rel.id">
+                                <div class="text-xs flex items-center gap-2 cursor-pointer hover:text-blue-400 transition"
+                                     @click="openAlertDetail({id: rel.id})">
+                                    <span class="font-mono px-1 py-0.5 rounded text-[10px]"
+                                          :class="{
+                                              'bg-red-900 text-red-300': rel.severity === 'critical',
+                                              'bg-yellow-900 text-yellow-300': rel.severity === 'suspect',
+                                              'bg-cyan-900 text-cyan-300': rel.severity === 'elevated',
+                                              'bg-gray-700 text-gray-400': rel.severity === 'info',
+                                          }"
+                                          x-text="rel.severity"></span>
+                                    <span x-text="rel.title" class="truncate"></span>
+                                </div>
+                            </template>
+                        </div>
+                    </div>
+                </template>
+
+                <!-- Metadata -->
+                <template x-if="selectedAlert.metadata">
+                    <div class="mt-3 bg-gray-800 rounded-lg p-3">
+                        <h4 class="text-[10px] font-semibold text-gray-500 uppercase mb-2">Metadata</h4>
+                        <pre class="text-[10px] text-gray-400 overflow-x-auto whitespace-pre-wrap" x-text="typeof selectedAlert.metadata === 'string' ? selectedAlert.metadata : JSON.stringify(selectedAlert.metadata, null, 2)"></pre>
+                    </div>
+                </template>
+            </div>
+        </template>
+    </div>
+</div>
+
+<!-- Right: Intelligence Panel -->
+<div class="w-[28rem] border-l border-gray-800 overflow-y-auto p-4 flex-shrink-0">
+
+    <!-- System Metrics (always visible) -->
+    <h2 class="text-xs font-semibold text-gray-500 uppercase mb-3">System</h2>
+    <div class="grid grid-cols-3 gap-2 mb-4">
+        <div class="bg-gray-900 rounded-lg p-2.5">
+            <div class="text-[10px] text-gray-500 uppercase">Uptime</div>
+            <div class="text-base font-mono" x-text="formatUptime(displayUptime)"></div>
+        </div>
+        <div class="bg-gray-900 rounded-lg p-2.5">
+            <div class="text-[10px] text-gray-500 uppercase">Teams</div>
+            <div class="text-base font-mono" x-text="metrics.team_count || 0"></div>
+        </div>
+        <div class="bg-gray-900 rounded-lg p-2.5">
+            <div class="text-[10px] text-gray-500 uppercase">Events</div>
+            <div class="text-base font-mono" x-text="totalEvents"></div>
+        </div>
+    </div>
+
+    <!-- Per-team metrics -->
+    <template x-for="(info, tid) in (metrics.teams || {})" :key="tid">
+        <div class="bg-gray-900 rounded-lg p-3 mb-2">
+            <div class="text-xs font-medium text-gray-300 mb-1.5" x-text="info.name || tid"></div>
+            <div class="grid grid-cols-4 gap-1 text-[10px]">
+                <div>
+                    <div class="text-gray-500">Queue H</div>
+                    <div class="font-mono" x-text="info.queue_depths?.high || 0"></div>
+                </div>
+                <div>
+                    <div class="text-gray-500">Queue L</div>
+                    <div class="font-mono" x-text="info.queue_depths?.low || 0"></div>
+                </div>
+                <div>
+                    <div class="text-gray-500">Timeline</div>
+                    <div class="font-mono" x-text="info.timeline_size || 0"></div>
+                </div>
+                <div>
+                    <div class="text-gray-500">Detectors</div>
+                    <div class="font-mono" x-text="info.detectors || 0"></div>
+                </div>
+            </div>
+            <!-- Alert breakdowns -->
+            <template x-if="info.alerts && info.alerts.total > 0">
+                <div class="mt-2 pt-2 border-t border-gray-800">
+                    <div class="grid grid-cols-4 gap-1 text-[10px]">
+                        <div>
+                            <div class="text-red-400">Critical</div>
+                            <div class="font-mono" x-text="info.alerts.by_severity?.critical || 0"></div>
+                        </div>
+                        <div>
+                            <div class="text-yellow-400">Suspect</div>
+                            <div class="font-mono" x-text="info.alerts.by_severity?.suspect || 0"></div>
+                        </div>
+                        <div>
+                            <div class="text-cyan-400">Elevated</div>
+                            <div class="font-mono" x-text="info.alerts.by_severity?.elevated || 0"></div>
+                        </div>
+                        <div>
+                            <div class="text-gray-400">Info</div>
+                            <div class="font-mono" x-text="info.alerts.by_severity?.info || 0"></div>
+                        </div>
+                    </div>
+                    <div class="grid grid-cols-4 gap-1 text-[10px] mt-1">
+                        <div>
+                            <div class="text-purple-400">Evidence</div>
+                            <div class="font-mono" x-text="info.alerts.by_category?.evidence || 0"></div>
+                        </div>
+                        <div>
+                            <div class="text-orange-400">Attrib.</div>
+                            <div class="font-mono" x-text="info.alerts.by_category?.attribution || 0"></div>
+                        </div>
+                        <div>
+                            <div class="text-blue-400">Attend.</div>
+                            <div class="font-mono" x-text="info.alerts.by_category?.attendance || 0"></div>
+                        </div>
+                        <div>
+                            <div class="text-gray-400">Process</div>
+                            <div class="font-mono" x-text="info.alerts.by_category?.process || 0"></div>
+                        </div>
+                    </div>
+                </div>
+            </template>
+        </div>
+    </template>
+
+    <!-- System Log Feed -->
+    <h2 class="text-xs font-semibold text-gray-500 uppercase mb-2 mt-2">Log</h2>
+    <div class="overflow-y-auto bg-gray-900 rounded-lg p-2 font-mono text-[10px]" style="max-height: 500px;" id="log-feed"
+         @mouseenter="logPauseScroll = true" @mouseleave="logPauseScroll = false">
+        <template x-for="(entry, i) in logs" :key="i">
+            <div class="py-0.5 flex gap-2"
+                 :class="{
+                     'text-green-400': entry.level === 'info',
+                     'text-yellow-400': entry.level === 'warn' || entry.level === 'warning',
+                     'text-red-400': entry.level === 'error' || entry.level === 'critical',
+                     'text-gray-600': entry.level === 'debug',
+                 }">
+                <span class="text-gray-600 flex-shrink-0" x-text="entry.ts ? new Date(entry.ts * 1000).toLocaleTimeString() : ''"></span>
+                <span class="flex-shrink-0" x-text="'[' + (entry.source || '?') + ']'"></span>
+                <span class="break-all whitespace-pre-wrap" x-text="entry.msg"></span>
+            </div>
+        </template>
+        <div x-show="logs.length === 0" class="text-gray-600 py-2">Waiting for log events...</div>
+    </div>
+</div>
+
+</div>
+
+<!-- Config Drawer (slide-over) -->
+<div x-show="configOpen" x-transition:enter="transition ease-out duration-200"
+     x-transition:enter-start="opacity-0" x-transition:enter-end="opacity-100"
+     x-transition:leave="transition ease-in duration-150"
+     x-transition:leave-start="opacity-100" x-transition:leave-end="opacity-0"
+     class="fixed inset-0 z-40" @click.self="configOpen = false">
+    <div class="absolute inset-0 bg-black/40"></div>
+    <div class="absolute right-0 top-0 h-full w-[28rem] bg-gray-900 border-l border-gray-700 overflow-y-auto"
+         x-show="configOpen"
+         x-transition:enter="transition ease-out duration-200 transform"
+         x-transition:enter-start="translate-x-full" x-transition:enter-end="translate-x-0"
+         x-transition:leave="transition ease-in duration-150 transform"
+         x-transition:leave-start="translate-x-0" x-transition:leave-end="translate-x-full"
+         @click.stop>
+        <div class="p-5">
+            <div class="flex items-center justify-between mb-5">
+                <h2 class="text-sm font-semibold">Team Configuration</h2>
+                <button @click="configOpen = false" class="text-gray-400 hover:text-white">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                    </svg>
+                </button>
+            </div>
+
+            <template x-if="configData">
+                <div class="space-y-5">
+                    <!-- Sweep Settings -->
+                    <div>
+                        <h3 class="text-xs font-semibold text-gray-400 uppercase mb-2">Sweep Settings</h3>
+                        <div class="space-y-2">
+                            <label class="flex items-center justify-between">
+                                <span class="text-sm">Sweep on alert</span>
+                                <input type="checkbox" x-model="configData.sweep_on_alert"
+                                       class="rounded bg-gray-800 border-gray-600">
+                            </label>
+                            <label class="block">
+                                <span class="text-xs text-gray-400">Debounce (seconds)</span>
+                                <input type="number" x-model.number="configData.sweep_debounce"
+                                       class="mt-1 block w-full bg-gray-800 text-sm rounded px-3 py-1.5 border border-gray-700">
+                            </label>
+                            <label class="block">
+                                <span class="text-xs text-gray-400">Sweep interval (seconds, 0=disabled)</span>
+                                <input type="number" x-model.number="configData.sweep_interval"
+                                       class="mt-1 block w-full bg-gray-800 text-sm rounded px-3 py-1.5 border border-gray-700">
+                            </label>
+                        </div>
+                    </div>
+
+                    <!-- Detectors -->
+                    <div>
+                        <h3 class="text-xs font-semibold text-gray-400 uppercase mb-2">Detectors</h3>
+                        <div class="space-y-2">
+                            <template x-for="(dcfg, dname) in configData.detectors" :key="dname">
+                                <div class="bg-gray-800 rounded-lg p-3">
+                                    <label class="flex items-center justify-between">
+                                        <span class="text-sm font-mono" x-text="dname"></span>
+                                        <input type="checkbox" x-model="dcfg.enabled"
+                                               class="rounded bg-gray-700 border-gray-600">
+                                    </label>
+                                    <!-- Params (if any beyond enabled) -->
+                                    <div x-show="dcfg.enabled && Object.keys(dcfg).filter(k => k !== 'enabled').length > 0"
+                                         class="mt-2 space-y-1.5">
+                                        <template x-for="pkey in Object.keys(dcfg).filter(k => k !== 'enabled')" :key="pkey">
+                                            <label class="block">
+                                                <span class="text-[10px] text-gray-500" x-text="pkey.replace(/_/g, ' ')"></span>
+                                                <input type="number" x-model.number="dcfg[pkey]"
+                                                       class="mt-0.5 block w-full bg-gray-700 text-xs rounded px-2 py-1 border border-gray-600">
+                                            </label>
+                                        </template>
+                                    </div>
+                                </div>
+                            </template>
+                        </div>
+                    </div>
+
+                    <!-- Actions -->
+                    <div class="flex gap-2">
+                        <button @click="saveConfig()"
+                                class="flex-1 px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded text-sm font-medium transition">
+                            Save
+                        </button>
+                        <button @click="configOpen = false"
+                                class="flex-1 px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded text-sm font-medium transition">
+                            Cancel
+                        </button>
+                    </div>
+                </div>
+            </template>
+        </div>
+    </div>
+</div>
+
+<script>
+function dashboard() {
+    let graphInstance = null;
+
+    return {
+        teams: [],
+        alerts: [],
+        metrics: {},
+        selectedTeam: null,
+        teamDetail: null,
+        selectedMember: null,
+        severityFilter: '',
+        categoryFilter: '',
+        teamSearch: '',
+        pauseScroll: false,
+        connected: false,
+        configOpen: false,
+        configData: null,
+        _graphLoading: false,
+        graphError: '',
+        _uptimeBase: 0,
+        _uptimeReceivedAt: 0,
+        displayUptime: 0,
+
+        // New: tabs, logs, modal
+        currentTab: 'collaboration',
+        selectedAlert: null,
+        logsExpanded: false,
+        logPauseScroll: false,
+        logs: [],
+        _LOG_MAX: 200,
+        timelineEvents: [],
+        hasMoreEvents: false,
+        loadingMoreEvents: false,
+
+        // Collaboration state
+        collabData: null,
+        collabOverview: [],
+        collabExpanded: null,
+        collabComputing: false,
+        collabTier: 'git',  // default to git (code contribution — the signal that matters)
+
+        get totalEvents() {
+            let sum = 0;
+            for (const [, info] of Object.entries(this.metrics.teams || {})) {
+                sum += info.timeline_size || 0;
+            }
+            return sum;
+        },
+
+        get sortedTeams() {
+            let filtered = this.teams;
+            if (this.teamSearch) {
+                const q = this.teamSearch.toLowerCase();
+                filtered = filtered.filter(t =>
+                    (t.name || '').toLowerCase().includes(q) ||
+                    t.team_id.toLowerCase().includes(q)
+                );
+            }
+            return [...filtered].sort((a, b) => (b.alert_count || 0) - (a.alert_count || 0) || (a.name || a.team_id).localeCompare(b.name || b.team_id));
+        },
+
+        get sortedProfiles() {
+            if (!this.teamDetail || !this.teamDetail.profiles) return [];
+            return [...this.teamDetail.profiles].sort((a, b) =>
+                ((b.perpetrator_score || 0) + (b.victim_score || 0)) -
+                ((a.perpetrator_score || 0) + (a.victim_score || 0))
+            );
+        },
+
+        get relationships() {
+            if (!this.teamDetail || !this.teamDetail.profiles) return [];
+            const edges = {};
+            for (const p of this.teamDetail.profiles) {
+                for (const f of this.parsedFlags(p)) {
+                    if (f.actor && f.victim && f.actor !== f.victim) {
+                        const key = `${f.actor}|${f.victim}|${f.type}`;
+                        if (!edges[key]) edges[key] = { actor: f.actor, victim: f.victim, type: f.type, count: 0 };
+                        edges[key].count++;
+                    }
+                }
+            }
+            // Deduplicate (perpetrator flags and victim flags both appear)
+            const deduped = {};
+            for (const e of Object.values(edges)) {
+                // Keep perpetrator-side flag types (current deviation model + legacy)
+                if (['attribution-deviation', 'deleted-others-branch', 'file-reattribution', 'zero-commit-completion'].includes(e.type)) {
+                    const key = `${e.actor}|${e.victim}|${e.type}`;
+                    deduped[key] = e;
+                }
+            }
+            return Object.values(deduped).sort((a, b) => b.count - a.count);
+        },
+
+        get filteredAlerts() {
+            let filtered = this.alerts;
+            if (this.severityFilter) filtered = filtered.filter(a => a.severity === this.severityFilter);
+            if (this.categoryFilter) filtered = filtered.filter(a => a.category === this.categoryFilter);
+            if (this.selectedTeam) filtered = filtered.filter(a => a.team_id === this.selectedTeam);
+            return filtered;
+        },
+
+        parsedFlags(profile) {
+            if (!profile.flags) return [];
+            try {
+                const flags = typeof profile.flags === 'string' ? JSON.parse(profile.flags) : profile.flags;
+                return Array.isArray(flags) ? flags : [];
+            } catch (err) {
+                console.error('Invalid flags JSON for', profile.member, err);
+                return [];
+            }
+        },
+
+        // --- Collaboration computed properties ---
+        get collabKPIs() {
+            const d = this.collabData?.latest;
+            if (!d) return [];
+            // Use tiered data if available, fall back to top-level
+            const tierData = d.tiers?.[this.collabTier] || d;
+            const kpiDefs = [
+                { key: 'gini', label: 'Gini', field: 'gini', inverted: true, fmt: v => v?.toFixed(2) ?? '---',
+                  desc: 'Work distribution inequality (Mockus et al. 2002). 0 = equal, 1 = one person does everything.',
+                  action: 'If increasing, redistribute tasks across team members next sprint.' },
+                { key: 'entropy', label: 'Entropy', field: 'entropy_norm', inverted: false, fmt: v => v?.toFixed(2) ?? '---',
+                  desc: 'Participation breadth (Hassan 2009). 1.0 = everyone contributes equally.',
+                  action: 'Low entropy means few members are active. Check for disengaged members.' },
+                { key: 'bus_factor', label: 'Bus F.', field: 'bus_factor', inverted: false, fmt: v => v != null ? String(v) : '---',
+                  desc: 'Minimum removals before >50% of work orphaned (Avelino et al. 2016).',
+                  action: 'Bus factor of 1 is critical. Push for knowledge transfer and pair work.' },
+                { key: 'clustering', label: 'Cluster', field: 'clustering_ratio', inverted: true, fmt: v => v?.toFixed(2) ?? '---',
+                  desc: 'Deadline clustering ratio (Eyolfson et al. 2011). >0.4 = deadline-dependent.',
+                  action: 'High clustering means cramming. Review sprint planning and task breakdown.' },
+                { key: 'cadence', label: 'Cadence', field: 'cadence_regularity', inverted: false, fmt: v => v?.toFixed(2) ?? '---',
+                  desc: 'Commit regularity (Claes et al. 2018). 1.0 = steady daily work.',
+                  action: 'Low cadence indicates bursty work patterns. Consider daily standups.' },
+                { key: 'churn', label: 'Churn Bal.', field: 'churn_balance', inverted: false, fmt: v => v?.toFixed(2) ?? '---',
+                  desc: 'Code stability. 1.0 = all self-churn (healthy), 0 = all other-churn (code being replaced).',
+                  action: 'Low balance means code is being frequently replaced by others. Review PR practices.' },
+            ];
+            // Tier-aware fields use tierData, others use top-level d
+            const tierFields = new Set(['gini', 'entropy_norm', 'interaction_density', 'bus_factor']);
+            return kpiDefs.map(k => {
+                const val = tierFields.has(k.field) ? tierData[k.field] : d[k.field];
+                const hist = (this.collabData?.history || []).map(h => h[k.field]).filter(v => v != null);
+                return {
+                    ...k,
+                    value: val,
+                    display: k.fmt(val),
+                    trend: hist.length >= 3 ? this._calcTrend(hist) : 'insufficient',
+                };
+            });
+        },
+
+        get collabExpandedTitle() {
+            const kpi = this.collabKPIs.find(k => k.key === this.collabExpanded);
+            return kpi ? kpi.label : '';
+        },
+        get collabExpandedDesc() {
+            const kpi = this.collabKPIs.find(k => k.key === this.collabExpanded);
+            return kpi ? kpi.desc : '';
+        },
+        get collabExpandedAction() {
+            const kpi = this.collabKPIs.find(k => k.key === this.collabExpanded);
+            return kpi ? kpi.action : '';
+        },
+        get collabSparkData() {
+            if (!this.collabExpanded) return [];
+            const kpi = this.collabKPIs.find(k => k.key === this.collabExpanded);
+            if (!kpi) return [];
+            return (this.collabData?.history || []).map(h => h[kpi.field]).filter(v => v != null);
+        },
+        get collabSparkPoints() {
+            const data = this.collabSparkData;
+            if (data.length < 2) return '';
+            const max = Math.max(...data, 0.001);
+            const min = Math.min(...data, 0);
+            const range = max - min || 1;
+            return data.map((v, i) => {
+                const x = (i / (data.length - 1)) * 200;
+                const y = 38 - ((v - min) / range) * 36;
+                return `${x},${y}`;
+            }).join(' ');
+        },
+        get collabMembers() {
+            const pm = this.collabData?.latest?.per_member;
+            if (!pm) return [];
+            return Object.entries(pm).sort((a, b) => (b[1].total_actions || 0) - (a[1].total_actions || 0));
+        },
+
+        _calcTrend(values) {
+            if (values.length < 3) return 'insufficient';
+            const recent = values.slice(-4);
+            const n = recent.length;
+            const xBar = (n - 1) / 2;
+            const yBar = recent.reduce((a, b) => a + b, 0) / n;
+            let num = 0, den = 0;
+            for (let i = 0; i < n; i++) {
+                num += (i - xBar) * (recent[i] - yBar);
+                den += (i - xBar) ** 2;
+            }
+            const slope = den > 0 ? num / den : 0;
+            const relSlope = yBar !== 0 ? slope / yBar : 0;
+            if (relSlope > 0.05) return 'increasing';
+            if (relSlope < -0.05) return 'decreasing';
+            return 'stable';
+        },
+
+        async loadCollaboration(teamId) {
+            try {
+                const res = await fetch(`/api/teams/${teamId}/collaboration`);
+                if (res.ok) {
+                    this.collabData = await res.json();
+                }
+            } catch (err) {
+                console.error('Failed to load collaboration data:', err);
+            }
+        },
+
+        async loadCollabOverview() {
+            try {
+                const res = await fetch('/api/teams/overview');
+                if (res.ok) {
+                    const data = await res.json();
+                    this.collabOverview = data.teams || [];
+                }
+            } catch {}
+        },
+
+        async computeCollaboration() {
+            if (!this.selectedTeam || this.collabComputing) return;
+            this.collabComputing = true;
+            try {
+                const res = await fetch(`/api/teams/${this.selectedTeam}/collaboration/compute`, { method: 'POST' });
+                if (res.ok) {
+                    await this.loadCollaboration(this.selectedTeam);
+                }
+            } catch (err) {
+                console.error('Collaboration compute failed:', err);
+            } finally {
+                this.collabComputing = false;
+            }
+        },
+
+        async init() {
+            await this.fetchTeams();
+            // Backfill alerts from DB for all teams
+            for (const team of this.teams) {
+                try {
+                    const res = await fetch(`/api/teams/${team.team_id}/alerts?limit=50`);
+                    const historical = await res.json();
+                    this.alerts.push(...historical);
+                } catch {}
+            }
+            if (this.alerts.length > 1) {
+                this.alerts.sort((a, b) => (b.timestamp || '').localeCompare(a.timestamp || ''));
+                this.alerts = this.alerts.slice(0, 500);
+            }
+            this.connectAlertSSE();
+            this.connectMetricsSSE();
+            this.connectLogSSE();
+            this.loadCollabOverview();
+            setInterval(() => this.fetchTeams(), 10000);
+            setInterval(() => {
+                if (this._uptimeReceivedAt) {
+                    this.displayUptime = this._uptimeBase + (Date.now() - this._uptimeReceivedAt) / 1000;
+                }
+            }, 1000);
+        },
+
+        pushLog(entry) {
+            if (this.logs.length >= this._LOG_MAX) this.logs.shift();
+            this.logs.push(entry);
+            // Auto-scroll log feed if not paused
+            this.$nextTick(() => {
+                const el = document.getElementById('log-feed');
+                if (el && !this.logPauseScroll) {
+                    el.scrollTop = el.scrollHeight;
+                }
+            });
+        },
+
+        connectLogSSE() {
+            const es = new EventSource('/api/logs/stream');
+            es.onmessage = (e) => {
+                try { this.pushLog(JSON.parse(e.data)); } catch {}
+            };
+            es.onerror = () => { setTimeout(() => this.connectLogSSE(), 5000); es.close(); };
+        },
+
+        async openAlertDetail(alert) {
+            // If alert has an id, fetch full detail from API
+            if (alert.id) {
+                try {
+                    const res = await fetch(`/api/alerts/${alert.id}`);
+                    this.selectedAlert = await res.json();
+                } catch { this.selectedAlert = alert; }
+            } else {
+                this.selectedAlert = alert;
+            }
+        },
+
+        async fetchTeams() {
+            try {
+                const res = await fetch('/api/teams');
+                this.teams = await res.json();
+            } catch (e) { console.error('Failed to fetch teams:', e); }
+        },
+
+        async selectTeam(tid) {
+            this.selectedTeam = this.selectedTeam === tid ? null : tid;
+            this.selectedMember = null;
+            if (this.selectedTeam) {
+                this.pushLog({level: 'info', source: 'ui', msg: `Selected team ${tid}`, ts: Date.now()/1000});
+                try {
+                    const res = await fetch(`/api/teams/${tid}`);
+                    this.teamDetail = await res.json();
+                    const memberCount = this.teamDetail?.profiles?.length || 0;
+                    this.pushLog({level: 'info', source: 'ui', msg: `Loaded ${memberCount} member profiles`, ts: Date.now()/1000});
+                    // Fetch timeline events
+                    try {
+                        const evRes = await fetch(`/api/teams/${tid}/events?limit=500`);
+                        this.timelineEvents = await evRes.json();
+                        this.hasMoreEvents = this.timelineEvents.length >= 500;
+                    } catch { this.timelineEvents = []; this.hasMoreEvents = false; }
+                    if (this.currentTab === 'graph') this.$nextTick(() => this.renderGraph());
+                    if (this.currentTab === 'collaboration') this.loadCollaboration(tid);
+                } catch (e) { this.teamDetail = null; this.pushLog({level: 'error', source: 'ui', msg: `Failed to load team: ${e.message}`, ts: Date.now()/1000}); }
+            } else {
+                this.teamDetail = null;
+                this.collabData = null;
+                this.timelineEvents = [];
+                this.hasMoreEvents = false;
+                if (graphInstance) { graphInstance._destructor && graphInstance._destructor(); graphInstance = null; }
+            }
+        },
+
+        async downloadReport(tid) {
+            if (!tid) return;
+            try {
+                const res = await fetch(`/api/teams/${tid}/report`);
+                const text = await res.text();
+                const blob = new Blob([text], { type: 'text/markdown' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `report-${tid}.md`;
+                a.click();
+                URL.revokeObjectURL(url);
+            } catch (e) { console.error('Report download failed:', e); }
+        },
+
+        async loadMoreEvents() {
+            if (!this.selectedTeam || this.loadingMoreEvents || !this.hasMoreEvents) return;
+            this.loadingMoreEvents = true;
+            try {
+                const last = this.timelineEvents[this.timelineEvents.length - 1];
+                const before = last ? last.timestamp : '';
+                const res = await fetch(`/api/teams/${this.selectedTeam}/events?limit=200&before=${encodeURIComponent(before)}`);
+                const more = await res.json();
+                if (more.length > 0) {
+                    this.timelineEvents.push(...more);
+                    this.hasMoreEvents = more.length >= 200;
+                } else {
+                    this.hasMoreEvents = false;
+                }
+            } catch (e) { console.error('Failed to load more events:', e); }
+            this.loadingMoreEvents = false;
+        },
+
+        async sweepTeam(tid) {
+            this.pushLog({level: 'info', source: 'ui.sweep', msg: `Sweep requested for ${tid}`, ts: Date.now()/1000});
+            try {
+                await fetch(`/api/teams/${tid}/sweep`, { method: 'POST' });
+                this.pushLog({level: 'info', source: 'ui.sweep', msg: `Sweep complete for ${tid}`, ts: Date.now()/1000});
+                await this.selectTeam(null);
+                await this.selectTeam(tid);
+            } catch (e) { this.pushLog({level: 'error', source: 'ui.sweep', msg: `Sweep failed: ${e.message}`, ts: Date.now()/1000}); }
+        },
+
+        async openConfig() {
+            if (!this.selectedTeam) return;
+            this.pushLog({level: 'info', source: 'ui.config', msg: `Opening config for ${this.selectedTeam}`, ts: Date.now()/1000});
+            try {
+                const res = await fetch(`/api/teams/${this.selectedTeam}/config`);
+                this.configData = await res.json();
+                this.configOpen = true;
+            } catch (e) { this.pushLog({level: 'error', source: 'ui.config', msg: `Failed to load config: ${e.message}`, ts: Date.now()/1000}); }
+        },
+
+        async saveConfig() {
+            if (!this.selectedTeam || !this.configData) return;
+            this.pushLog({level: 'info', source: 'ui.config', msg: `Saving config for ${this.selectedTeam}`, ts: Date.now()/1000});
+            try {
+                await fetch(`/api/teams/${this.selectedTeam}/config`, {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(this.configData),
+                });
+                this.configOpen = false;
+                this.pushLog({level: 'info', source: 'ui.config', msg: `Config saved`, ts: Date.now()/1000});
+            } catch (e) { this.pushLog({level: 'error', source: 'ui.config', msg: `Save failed: ${e.message}`, ts: Date.now()/1000}); }
+        },
+
+        renderGraph() {
+            this.graphError = '';
+            const container = document.getElementById('tab-graph-container');
+            if (!container || !this.teamDetail || !this.teamDetail.profiles) return;
+            const profiles = this.teamDetail.profiles;
+            if (profiles.length === 0) {
+                this.graphError = 'No member profiles yet. Run Sweep first to generate profiles.';
+                return;
+            }
+            if (container.clientWidth === 0 || container.clientHeight === 0) {
+                setTimeout(() => this.renderGraph(), 200);
+                return;
+            }
+
+            // Lazy load 3d-force-graph
+            if (!window.ForceGraph3D) {
+                if (this._graphLoading) return;
+                this._graphLoading = true;
+                const s = document.createElement('script');
+                s.src = 'https://unpkg.com/3d-force-graph@1';
+                s.onload = () => { this._graphLoading = false; this.renderGraph(); };
+                s.onerror = () => { this._graphLoading = false; this.graphError = 'Failed to load graph library.'; };
+                document.head.appendChild(s);
+                return;
+            }
+
+            const dirColorsHex = { perpetrator: '#ef4444', victim: '#3b82f6', mixed: '#f97316', neutral: '#22d3ee' };
+
+            // === Build dense graph from timeline + profiles ===
+            const nodes = [];
+            const links = [];
+            const nodeIds = new Set();
+            const cardOwners = {};   // card_id → member
+            const cardBranches = {}; // card_id → branch
+            const deviationCards = new Set();
+
+            // Deviation cards from profile flags
+            for (const p of profiles) {
+                for (const f of this.parsedFlags(p)) {
+                    if (f.type === 'attribution-deviation' || f.type === 'attribution-victim') {
+                        const m = f.detail?.match(/Card (\d+)/);
+                        if (m) deviationCards.add(m[1]);
+                    }
+                }
+            }
+
+            // Member nodes (hubs)
+            for (const p of profiles) {
+                const activity = (p.commits || 0) + (p.cards_completed || 0);
+                nodes.push({
+                    id: `m:${p.member}`, name: p.member, type: 'member',
+                    val: Math.max(6, Math.sqrt(activity + 1) * 2),
+                    color: dirColorsHex[p.direction] || '#22d3ee',
+                });
+                nodeIds.add(`m:${p.member}`);
+            }
+
+            // Scan timeline for cards, branches, commits
+            const seenCommits = new Set();
+            let commitSample = 0;
+            for (const ev of this.timelineEvents) {
+                const actor = ev.actor;
+                const mid = `m:${actor}`;
+
+                // Cards
+                if (ev.action === 'card.create' || ev.action === 'card.assign' || ev.action === 'card.move') {
+                    const cid = `c:${ev.target}`;
+                    if (!nodeIds.has(cid)) {
+                        nodeIds.add(cid);
+                        nodes.push({
+                            id: cid, name: `Card ${ev.target}`, type: 'card',
+                            val: deviationCards.has(ev.target) ? 2 : 0.8,
+                            color: deviationCards.has(ev.target) ? '#7f1d1d' : '#064e3b',
+                        });
+                    }
+                    if (ev.action === 'card.assign' && nodeIds.has(mid)) {
+                        cardOwners[ev.target] = actor;
+                        links.push({ source: mid, target: cid, ltype: 'owns' });
+                    }
+                    if (ev.action === 'card.move' && nodeIds.has(mid)) {
+                        links.push({ source: mid, target: cid, ltype: 'moved' });
+                    }
+                }
+
+                // Branches (from card.tag with branch:)
+                if (ev.action === 'card.tag' && ev.metadata?.tag?.startsWith('branch:')) {
+                    let branch = ev.metadata.tag.replace('branch:', '').replace(/^#/, '');
+                    if (branch.startsWith('http') || branch.startsWith('pull/')) continue;
+                    const bid = `b:${branch}`;
+                    const cid = `c:${ev.target}`;
+                    if (!nodeIds.has(bid)) {
+                        nodeIds.add(bid);
+                        nodes.push({
+                            id: bid, name: branch, type: 'branch',
+                            val: 0.5, color: '#083344',
+                        });
+                    }
+                    if (nodeIds.has(cid)) links.push({ source: cid, target: bid, ltype: 'linked' });
+                    cardBranches[ev.target] = branch;
+                }
+
+                // Commits (sample every 3rd, cap at 60)
+                if (ev.action === 'commit.create' && commitSample < 60) {
+                    commitSample++;
+                    if (commitSample % 3 !== 0) continue;
+                    const hash = ev.target || ev.metadata?.full_hash?.slice(0, 7) || `commit-${commitSample}`;
+                    const kid = `k:${hash}`;
+                    if (!nodeIds.has(kid)) {
+                        nodeIds.add(kid);
+                        nodes.push({
+                            id: kid, name: hash, type: 'commit',
+                            val: 0.2, color: '#1a1a2e',
+                        });
+                    }
+                    // Link commit to author
+                    if (nodeIds.has(mid)) links.push({ source: mid, target: kid, ltype: 'committed' });
+                    // Link commit to branch
+                    const branch = ev.metadata?.branch?.replace(/^#/, '');
+                    if (branch && nodeIds.has(`b:${branch}`)) {
+                        links.push({ source: kid, target: `b:${branch}`, ltype: 'committed' });
+                    }
+                }
+
+                // Branch deletes → deviation link
+                if (ev.action === 'branch.delete' && ev.metadata?.card_number) {
+                    const cid = `c:${ev.metadata.card_number}`;
+                    if (nodeIds.has(mid) && nodeIds.has(cid)) {
+                        links.push({ source: mid, target: cid, ltype: 'deviation' });
+                    }
+                }
+            }
+
+            // Deviation links from profile flags
+            for (const p of profiles) {
+                for (const f of this.parsedFlags(p)) {
+                    if (f.type === 'attribution-deviation' && f.victim) {
+                        const mid = `m:${p.member}`;
+                        const vid = `m:${f.victim}`;
+                        if (nodeIds.has(mid) && nodeIds.has(vid)) {
+                            links.push({ source: mid, target: vid, ltype: 'deviation' });
+                        }
+                    }
+                }
+            }
+
+            const data = { nodes, links };
+
+            if (graphInstance) {
+                graphInstance.width(container.clientWidth).height(container.clientHeight || 600);
+                graphInstance.graphData(data);
+                return;
+            }
+
+            graphInstance = ForceGraph3D({ controlType: 'orbit' })(container)
+                .graphData(data)
+                .backgroundColor('#030712')
+                .showNavInfo(false)
+                .width(container.clientWidth)
+                .height(container.clientHeight || 600)
+
+                // Nodes: tiny glowing points, members as bright hubs
+                .nodeVal(n => n.val)
+                .nodeColor(n => n.color)
+                .nodeOpacity(0.9)
+                .nodeLabel(n => {
+                    if (n.type === 'member') return `${n.name} | ${profiles.find(p => p.member === n.name)?.direction || '?'}`;
+                    if (n.type === 'card') return n.name;
+                    if (n.type === 'branch') return `branch: ${n.name}`;
+                    return n.name;
+                })
+
+                // Links: thin luminous lines
+                .linkWidth(l => {
+                    if (l.ltype === 'deviation') return 1.2;
+                    if (l.ltype === 'owns') return 0.2;
+                    if (l.ltype === 'moved') return 0.15;
+                    return 0.08;
+                })
+                .linkColor(l => {
+                    if (l.ltype === 'deviation') return '#ef4444';
+                    if (l.ltype === 'owns') return '#0e7490';
+                    if (l.ltype === 'moved') return '#92400e';
+                    if (l.ltype === 'committed') return '#064e3b';
+                    if (l.ltype === 'linked') return '#1e1e2e';
+                    return '#0a0a0a';
+                })
+                .linkOpacity(0.35)
+
+                // Particles on deviation + ownership links
+                .linkDirectionalParticles(l => {
+                    if (l.ltype === 'deviation') return 4;
+                    if (l.ltype === 'owns') return 1;
+                    return 0;
+                })
+                .linkDirectionalParticleWidth(l => l.ltype === 'deviation' ? 1.5 : 0.5)
+                .linkDirectionalParticleSpeed(l => l.ltype === 'deviation' ? 0.012 : 0.003)
+                .linkDirectionalParticleColor(l => l.ltype === 'deviation' ? '#ef4444' : '#22d3ee')
+
+                // Interaction
+                .onNodeClick(node => {
+                    if (node.type === 'member') {
+                        this.selectedMember = this.selectedMember === node.name ? null : node.name;
+                    }
+                })
+                .onNodeHover(node => { container.style.cursor = node ? 'pointer' : 'default'; })
+
+                // Physics: spread out, slow decay for organic web feel
+                .d3AlphaDecay(0.015)
+                .d3VelocityDecay(0.25)
+                .warmupTicks(80)
+                .cooldownTicks(200);
+
+            // Orbit controls
+            const controls = graphInstance.controls();
+            controls.enableDamping = true;
+            controls.dampingFactor = 0.08;
+            controls.rotateSpeed = 1.0;
+            controls.zoomSpeed = 1.0;
+            controls.enablePan = true;
+            controls.autoRotate = true;
+            controls.autoRotateSpeed = 0.4;
+            controls.minDistance = 40;
+            controls.maxDistance = 600;
+
+            let idleTimer = null;
+            container.addEventListener('pointerdown', () => {
+                controls.autoRotate = false;
+                clearTimeout(idleTimer);
+            });
+            container.addEventListener('pointerup', () => {
+                clearTimeout(idleTimer);
+                idleTimer = setTimeout(() => { controls.autoRotate = true; }, 4000);
+            });
+
+            // Zoom to fit after simulation settles
+            setTimeout(() => {
+                if (graphInstance) graphInstance.zoomToFit(600, 30);
+            }, 2000);
+        },
+
+        connectAlertSSE() {
+            const src = new EventSource('/api/alerts/stream');
+            src.onmessage = (e) => {
+                try {
+                    const alert = JSON.parse(e.data);
+                    this.alerts.unshift(alert);
+                    if (this.alerts.length > 500) this.alerts.pop();
+                    if (!this.pauseScroll) {
+                        this.$nextTick(() => {
+                            const feed = document.getElementById('alert-feed');
+                            if (feed) feed.scrollTop = 0;
+                        });
+                    }
+                } catch (err) { console.error('Alert SSE parse error:', err); }
+            };
+            src.onopen = () => { this.connected = true; this.pushLog({level: 'info', source: 'sse', msg: 'Alert stream connected', ts: Date.now()/1000}); };
+            src.onerror = () => { this.connected = false; src.close(); this.pushLog({level: 'warn', source: 'sse', msg: 'Alert stream disconnected, reconnecting...', ts: Date.now()/1000}); setTimeout(() => this.connectAlertSSE(), 5000); };
+        },
+
+        connectMetricsSSE() {
+            const src = new EventSource('/api/metrics/stream');
+            src.onmessage = (e) => {
+                try {
+                    this.metrics = JSON.parse(e.data);
+                    this._uptimeBase = this.metrics.uptime_seconds || 0;
+                    this._uptimeReceivedAt = Date.now();
+                    this.displayUptime = this._uptimeBase;
+                } catch (err) { console.error('Metrics SSE parse error:', err); }
+            };
+            src.onerror = () => { src.close(); setTimeout(() => this.connectMetricsSSE(), 5000); };
+        },
+
+        formatUptime(seconds) {
+            if (!seconds) return '0s';
+            const h = Math.floor(seconds / 3600);
+            const m = Math.floor((seconds % 3600) / 60);
+            const s = Math.floor(seconds % 60);
+            if (h > 0) return `${h}h ${m}m`;
+            if (m > 0) return `${m}m ${s}s`;
+            return `${s}s`;
+        },
+    };
+}
+</script>
+</body>
+</html>

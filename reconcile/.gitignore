@@ -2,10 +2,3 @@ config_local.py
 __pycache__/
 *.pyc
 .pytest_cache/
-.venv/
-venv/
-*.db
-*.db-shm
-*.db-wal
-data/
-.env

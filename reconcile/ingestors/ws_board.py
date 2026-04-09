@@ -211,6 +211,11 @@ class BoardWSIngestor(BaseIngestor):
 
             except Exception as e:
                 delay = min(self.reconnect_delay * 2 ** attempts + random.random(), 300)
-                log.warning("WS connection failed: %s. Retry in %.1fs (attempt %d)", e, delay, attempts + 1)
+                # First few failures are expected (server may not be up). Log as info, not warning.
+                if attempts < 3:
+                    log.info("WS unavailable (%s). Live ingest deferred, retry in %.0fs (attempt %d)",
+                             type(e).__name__, delay, attempts + 1)
+                else:
+                    log.warning("WS connection failed: %s. Retry in %.0fs (attempt %d)", e, delay, attempts + 1)
                 await asyncio.sleep(delay)
                 attempts += 1

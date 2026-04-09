@@ -418,6 +418,8 @@ class HistoricalAnalyzer:
         git_churn: dict | None = None,
         pm_member: str | None = None,
         commit_classifier=None,
+        git_repo: str = "",
+        git_author_map: dict[str, str] | None = None,
     ) -> dict:
         """Compute collaboration metrics for a sprint window.
 
@@ -425,7 +427,10 @@ class HistoricalAnalyzer:
         storage in collaboration_snapshots table.
 
         If commit_classifier is provided, commits are classified via NLI +
-        deterministic fusion. Classifications are returned alongside metrics.
+        deterministic fusion. Classification priority:
+          1. Classifier cache (hot — populated by prior replay or sweep)
+          2. Full git parse + classify_batch (if git_repo available)
+          3. Lightweight event-based classification (message-only, no diffs)
         """
         from .analyze.collaboration import compute_collaboration_metrics
 
@@ -444,9 +449,54 @@ class HistoricalAnalyzer:
             }
             event_dicts.append(d)
 
-        loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(
-            None,
+        # Classification priority:
+        #   1. Classifier cache (hot from prior replay/sweep)
+        #   2. Full git parse → classify_batch (diff-aware, most precise)
+        #   3. Lightweight classify_from_events (message-only, no diffs)
+        classifications = None
+        if commit_classifier and hasattr(commit_classifier, '_cache'):
+            if commit_classifier._cache:
+                classifications = commit_classifier._cache
+            else:
+                # Try full git parse first (diff-aware classification)
+                if git_repo:
+                    try:
+                        import os
+                        import subprocess
+                        repo_path = git_repo
+                        if os.path.isdir(os.path.join(repo_path, ".git")):
+                            from .analyze.code_quality import parse_git_log_patch
+                            loop = asyncio.get_running_loop()
+                            proc = await loop.run_in_executor(
+                                None,
+                                lambda: subprocess.run(
+                                    ["git", "-C", repo_path, "log", "--all", "--no-merges",
+                                     "-p", "--format=COMMIT:%H|%aN|%aI|%s"],
+                                    capture_output=True, timeout=60,
+                                ),
+                            )
+                            stdout = proc.stdout.decode("utf-8", errors="replace")
+                            commits = parse_git_log_patch(stdout, git_author_map or {})
+                            if commits:
+                                results = await commit_classifier.classify_batch(commits)
+                                classifications = results
+                                nli_count = sum(1 for r in results.values() if r.get("source") == "nli")
+                                log.info("Classified %d commits via git parse (%d NLI)", len(results), nli_count)
+                    except Exception as e:
+                        log.warning("Git parse classification failed: %s — falling back to event-based", e)
+
+                # Fallback: classify from event metadata (no git repo needed)
+                if not classifications:
+                    try:
+                        results = await commit_classifier.classify_from_events(event_dicts)
+                        if results:
+                            classifications = results
+                            log.info("Classified %d commits from event metadata (lightweight)", len(results))
+                    except Exception as e:
+                        log.warning("Lightweight classification failed: %s", e)
+
+        from functools import partial
+        compute_fn = partial(
             compute_collaboration_metrics,
             event_dicts,
             members or set(),
@@ -455,7 +505,11 @@ class HistoricalAnalyzer:
             git_churn,
             self._pipeline_map,
             pm_member,
+            commit_classifications=classifications,
         )
+
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, compute_fn)
 
     async def sweep_all(self, timelines: dict[str, list[Event]]) -> dict[str, dict[str, MemberProfile]]:
         """Batch sweep across all teams. Run concurrently."""

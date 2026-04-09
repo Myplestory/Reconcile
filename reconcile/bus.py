@@ -497,6 +497,17 @@ class EventBus:
             for team_id in team_ids:
                 await self._run_sweep(team_id, "scheduled")
 
+    async def _safe_ingestor(self, ingestor) -> None:
+        """Wrap ingestor.stream() so a crash doesn't kill the bus."""
+        try:
+            await ingestor.stream()
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            name = type(ingestor).__name__
+            log.error("Ingestor %s died: %s — live ingest deferred, bus continues", name, e)
+            self.emit_log("error", "ingestor", f"{name} died: {e}. Live ingest deferred.")
+
     # --- Lifecycle ---
 
     async def run(self) -> None:
@@ -516,7 +527,9 @@ class EventBus:
             asyncio.create_task(self._process_events(), name="bus-processor"),
         ]
         for ing in self._ingestors:
-            tasks.append(asyncio.create_task(ing.stream(), name=f"ingestor-{type(ing).__name__}"))
+            tasks.append(asyncio.create_task(
+                self._safe_ingestor(ing), name=f"ingestor-{type(ing).__name__}",
+            ))
 
         if self._sweep_interval:
             tasks.append(asyncio.create_task(self._scheduled_sweeps(), name="scheduled-sweep"))

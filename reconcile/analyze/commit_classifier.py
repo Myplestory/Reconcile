@@ -1035,6 +1035,114 @@ class CommitClassifier:
             "per_card": per_card,
         }
 
+    async def classify_from_events(
+        self,
+        events: list[dict],
+    ) -> dict[str, dict]:
+        """Lightweight classification from Event dicts (no git diff data).
+
+        Uses commit message + NLI only (no diff categories, no diff size).
+        For use when full CommitAnalysis objects are unavailable (e.g.,
+        replay from board data without git repo access).
+
+        events: list of event dicts with action="commit.create",
+                target=sha, metadata.message=commit_message
+
+        Returns {sha: classification_result} and populates self._cache.
+        """
+        commit_events = [
+            e for e in events
+            if e.get("action") == "commit.create" and e.get("target")
+        ]
+
+        results: dict[str, dict] = {}
+        uncached = []
+
+        for e in commit_events:
+            sha = str(e["target"])
+            if sha in self._cache:
+                results[sha] = self._cache[sha]
+            else:
+                uncached.append(e)
+
+        if not uncached:
+            return results
+
+        # Canonicalize from message only (no diff metadata)
+        canonicals: list[tuple[dict, CanonicalCommit, dict]] = []
+        for e in uncached:
+            msg = e.get("metadata", {}).get("message", "")
+            canonical = canonicalize_commit(message=msg)
+            det = classify_deterministic(canonical)
+            canonicals.append((e, canonical, det))
+
+        # NLI scoring for non-degenerate
+        nli_results: dict[str, dict[str, dict[str, float]]] = {}
+        nli_eligible = [(e, can, det) for e, can, det in canonicals if not can.degenerate]
+
+        if nli_eligible and self.engine and self.hot_circuit.allow_request():
+            pairs: list[tuple[str, str]] = []
+            for e, can, det in nli_eligible:
+                text = can.body
+                for cat, hyp in COMMIT_HYPOTHESES.items():
+                    pairs.append((text, hyp))
+
+            scores = await self.engine.score_batch(pairs)
+            if scores:
+                idx = 0
+                for e, can, det in nli_eligible:
+                    sha = str(e["target"])
+                    sha_scores: dict[str, dict[str, float]] = {}
+                    for cat in COMMIT_HYPOTHESES:
+                        sha_scores[cat] = scores[idx]
+                        idx += 1
+                    nli_results[sha] = sha_scores
+
+        # Fuse and build results
+        for e, canonical, det in canonicals:
+            sha = str(e["target"])
+            nli = nli_results.get(sha)
+
+            category, confidence, details = fuse_signals(
+                nli_scores=nli,
+                cc_prefix=canonical.prefix,
+                diff_categories=None,  # no diff data available
+                keyword_match=det["keyword_result"],
+                diff_size=0,
+            )
+
+            nli_contributed = nli is not None and confidence is not None
+
+            result = {
+                "sha": sha,
+                "classification": category,
+                "confidence": confidence,
+                "source": "nli" if nli_contributed else ("degenerate" if canonical.degenerate else "heuristic"),
+                "classification_deterministic": det["category"],
+                "nli_contributed": nli_contributed,
+                "agreement": category == det["category"],
+                "scores": nli,
+                "signals": details.get("signals", {}),
+                "margin": None,
+                "circuit_state": self.hot_circuit.state,
+            }
+
+            if nli:
+                sorted_ent = sorted(
+                    [s.get("entailment", 0) for s in nli.values()],
+                    reverse=True,
+                )
+                if len(sorted_ent) >= 2:
+                    result["margin"] = sorted_ent[0] - sorted_ent[1]
+
+            results[sha] = result
+
+            # Cache NLI-backed results
+            if nli_contributed:
+                self._cache[sha] = result
+
+        return results
+
     @staticmethod
     def calibration_report(
         classifications: list[dict],

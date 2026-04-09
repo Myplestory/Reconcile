@@ -392,6 +392,50 @@ class TestComputeAll:
         assert result["gini"] == 0.0
         assert result["entropy_norm"] == 0.0
 
+    def test_commit_classifications_aggregation(self):
+        """NLI classification data flows into metrics when provided."""
+        now = datetime(2026, 3, 15, tzinfo=timezone.utc)
+        start = now - timedelta(days=14)
+        events = [
+            {"timestamp": start + timedelta(days=1), "source": "git", "team_id": "t",
+             "actor": "A", "action": "commit.create", "target": "sha1",
+             "target_type": "commit", "metadata": {}},
+            {"timestamp": start + timedelta(days=2), "source": "git", "team_id": "t",
+             "actor": "A", "action": "commit.create", "target": "sha2",
+             "target_type": "commit", "metadata": {}},
+            {"timestamp": start + timedelta(days=3), "source": "git", "team_id": "t",
+             "actor": "B", "action": "commit.create", "target": "sha3",
+             "target_type": "commit", "metadata": {}},
+        ]
+        classifications = {
+            "sha1": {"classification": "feature", "confidence": 0.9},
+            "sha2": {"classification": "maintenance:bugfix", "confidence": 0.8},
+            "sha3": {"classification": "feature", "confidence": 0.95},
+        }
+        result = compute_collaboration_metrics(
+            events, {"A", "B"}, start, now,
+            commit_classifications=classifications,
+        )
+        assert "commit_classifications" in result
+        cls = result["commit_classifications"]
+        assert cls["team_totals"]["feature"] == 2
+        assert cls["team_totals"]["maintenance:bugfix"] == 1
+        assert cls["per_member"]["A"]["feature"] == 1
+        assert cls["per_member"]["A"]["maintenance:bugfix"] == 1
+        assert cls["per_member"]["A"]["primary_type"] in ("feature", "maintenance:bugfix")
+        assert cls["per_member"]["B"]["feature"] == 1
+        assert cls["per_member"]["B"]["primary_type"] == "feature"
+
+    def test_no_classifications_no_key(self):
+        """Without classifications param, no commit_classifications in result."""
+        events = [
+            {"timestamp": datetime(2026, 3, 1, tzinfo=timezone.utc), "source": "git",
+             "team_id": "t", "actor": "A", "action": "commit.create",
+             "target": "abc", "target_type": "commit", "metadata": {}},
+        ]
+        result = compute_collaboration_metrics(events, {"A"})
+        assert "commit_classifications" not in result
+
 
 # --- Column Flow Detector ---
 

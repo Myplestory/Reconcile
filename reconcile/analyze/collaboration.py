@@ -630,6 +630,7 @@ def compute_collaboration_metrics(
     git_churn: dict | None = None,
     pipeline_map: dict[str, str] | None = None,
     pm_member: str | None = None,
+    commit_classifications: dict[str, dict] | None = None,
 ) -> dict[str, Any]:
     """Compute all collaboration metrics for a sprint window.
 
@@ -758,7 +759,7 @@ def compute_collaboration_metrics(
     }
     health = composite_health_score(health_inputs, len(git_members))
 
-    return {
+    result = {
         # Backward-compatible top-level (combined values)
         "gini": round(gini, 4),
         "entropy_norm": round(entropy, 4),
@@ -793,6 +794,33 @@ def compute_collaboration_metrics(
         "stale_cards": stale,
         "assignment_mismatch": mismatch,
     }
+
+    # NLI commit classification aggregation (v2)
+    # Must be after result dict is assigned (not inline return)
+    if commit_classifications:
+        team_totals: dict[str, int] = defaultdict(int)
+        per_member_cls: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
+        for e in active_events:
+            if e.get("action") == "commit.create":
+                sha = str(e.get("target", ""))
+                cls = commit_classifications.get(sha, {})
+                category = cls.get("classification", "other")
+                actor = e.get("actor", "")
+                if actor:
+                    team_totals[category] += 1
+                    per_member_cls[actor][category] += 1
+        # Add convenience fields
+        for member_name, cats in per_member_cls.items():
+            numeric = {k: v for k, v in cats.items() if isinstance(v, int)}
+            if numeric:
+                cats["primary_type"] = max(numeric, key=numeric.get)
+                cats["total_classified"] = sum(numeric.values())
+        result["commit_classifications"] = {
+            "team_totals": dict(team_totals),
+            "per_member": {m: dict(c) for m, c in per_member_cls.items()},
+        }
+
+    return result
 
 
 def _median(values: list[float]) -> float:

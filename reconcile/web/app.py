@@ -619,11 +619,41 @@ def create_app(orchestrator, github_webhook_secret: str = "") -> Quart:
                 except asyncio.QueueFull:
                     break
 
+        # Post-replay: run NLI classification on git commits (populates classifier cache)
+        nli_classified = 0
+        classifier = orchestrator.commit_classifier
+        if classifier and source in ("git", "all"):
+            try:
+                git_repo = runner.config.git_repo if runner else ""
+                git_path = project_root / git_repo if git_repo else None
+                if git_path and git_path.exists():
+                    import subprocess as sp
+                    from reconcile.analyze.code_quality import parse_git_log_patch
+
+                    proc = sp.run(
+                        ["git", "-C", str(git_path), "log", "--all", "--no-merges",
+                         "-p", "--format=COMMIT:%H|%aN|%aI|%s"],
+                        capture_output=True, timeout=60,
+                    )
+                    stdout = proc.stdout.decode("utf-8", errors="replace")
+                    identity_map = cfg.git_author_map or {}
+                    commits = parse_git_log_patch(stdout, identity_map)
+                    if commits:
+                        results = await classifier.classify_batch(commits)
+                        nli_classified = sum(
+                            1 for r in results.values() if r.get("source") == "nli"
+                        )
+                        log.info("Post-replay NLI: classified %d commits (%d via NLI)",
+                                 len(results), nli_classified)
+            except Exception as e:
+                log.warning("Post-replay NLI classification failed: %s", e)
+
         return jsonify({
             "status": "replay_complete",
             "team_id": team_id,
             "total_events": total,
             "injected": injected,
+            "nli_classified": nli_classified,
             "speed": speed,
             "source": source,
         })
@@ -807,6 +837,9 @@ def create_app(orchestrator, github_webhook_secret: str = "") -> Quart:
 
         metrics = await runner._analyzer.sweep_collaboration(
             timeline, team_id, members, pm_member=pm_canonical,
+            commit_classifier=orchestrator.commit_classifier,
+            git_repo=runner.config.git_repo,
+            git_author_map=runner.config.git_author_map,
         )
 
         # Write to snapshot store (sprint_id 0 = full-history aggregate)

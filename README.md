@@ -2,7 +2,7 @@
 
 Real-time collaboration health monitoring engine for software engineering teams.
 
-DEFERRED UNTIL POLYEDGE FINISHES SHIPPING
+DEFERRED.
 
 Ingests project management board activity, git history, and status reports. Computes
 collaboration metrics (Gini, entropy, bus factor, churn decomposition) segmented by

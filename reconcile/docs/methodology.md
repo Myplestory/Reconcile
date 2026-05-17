@@ -280,13 +280,13 @@ Evaluated against 88 card titles from the Team 1470 PMTool board:
 
 | Input type | % of cards | NLI difficulty | Handling |
 |---|---|---|---|
-| User stories ("As a delivery manager I want...") | 28% | Easy — natural English, clear NLI separation | NLI classifies directly |
+| User stories ("As a [x] I want...") | 28% | Easy — natural English, clear NLI separation | NLI classifies directly |
 | Labeled implementations ("Login Page Implementation") | 23% | Easy — "implementation" is strong lexical signal | NLI + keyword fusion |
-| Frontend/Backend split ("...on the Management page(backend)") | 17% | Easy — suffix enriches diff-category signal | Diff category + NLI fusion |
-| Short technical ("Map Routing", "ETA Handling") | 17% | Degenerate — <4 words | Skip NLI → deterministic |
+| Frontend/Backend split ("...on the [x] page(backend)") | 17% | Easy — suffix enriches diff-category signal | Diff category + NLI fusion |
+| Short technical ("[x] Routing", "[x] Handling") | 17% | Degenerate — <4 words | Skip NLI → deterministic |
 | Ambiguous ("Prevent XSS and SQL Injection Attacks") | 9% | Medium — thin margins | Confidence threshold → deterministic |
-| Research/design ("research of map feasibility") | 3% | Medium — needs research hypothesis | Card-specific hypothesis handles it |
-| Garbage ("Shihao Liu -User story 1") | 2% | Degenerate — generic pattern | Pattern detection → skip |
+| Research/design ("research [x] feasibility") | 3% | Medium — needs research hypothesis | Card-specific hypothesis handles it |
+| Garbage ("S-User story 1") | 2% | Degenerate — generic pattern | Pattern detection → skip |
 
 **~72% of card titles are classifiable by NLI** (easy + medium categories).
 **~28% route to deterministic fallback** (degenerate + garbage).

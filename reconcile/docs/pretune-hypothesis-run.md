@@ -3,7 +3,7 @@
 Date: 2026-04-09
 Model: `MoritzLaurer/deberta-v3-base-zeroshot-v2.0` (184M params, FP32)
 Device: MPS (Apple Silicon)
-Repository: `data/s26-fresh-clone` (Team 1470, CSE 442 S26)
+Repository: `data/s26-fresh-clone` (Team [z], CSE 442 S26)
 Inference time: ~4s for 108 commits on MPS
 
 This is the **pre-tuning baseline** — default hypothesis templates, default confidence

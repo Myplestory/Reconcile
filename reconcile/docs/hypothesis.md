@@ -37,7 +37,7 @@ open-source projects that enforce Conventional Commits or detailed messages, stu
 commits include:
 
 - Keyword-matchable: "fix login bug", "refactor authentication" (~60%)
-- Ambiguous: "reconciled with shuning map changes", "line 28 same fix" (~25%)
+- Ambiguous: "reconciled with [x] map changes", "line 28 same fix" (~25%)
 - Degenerate: "map", "update", "." (~15%)
 
 Keyword matching (regex on commit messages) correctly classifies only the first category.
@@ -113,7 +113,7 @@ judgment constitutes pedagogical authority in this domain.
 The 10pp threshold is a minimum practical significance level: below this, the
 computational overhead of model inference is not justified. It is not a derived value.
 
-**Domain**: Ambiguous commits from Team 1470 repository (~42 of 108 commits). Extended
+**Domain**: Ambiguous commits from Team [z] repository (~42 of 108 commits). Extended
 to 5+ teams if H1_1 is supported.
 
 ### H2: Metric Sensitivity
